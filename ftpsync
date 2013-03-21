@@ -1,0 +1,104 @@
+#!/usr/bin/env node
+
+// http://code.google.com/p/ftpsync2d/
+
+
+var _ = require('underscore');
+var optimist = require('optimist');
+var FTP = require('jsftp');
+var fs = require('fs');
+var filesToSync = [];
+var path = require('path');
+var ftp;
+
+var argv = optimist
+	.usage("Usage: $0 ")
+	.string('d').describe('d', 'Local Directory to Mirror (can also be a single file)').default('d', '.').alias('d', 'localdir')
+	.string('u').describe('u', 'Remote FTP User').default('u', 'anonymous').alias('u', 'user')
+	.string('h').describe('h', 'Remote FTP Host').default('h', 'localhost').alias('h', 'host')
+	.string('p').describe('p', 'Remote FTP User Password').default('p', 'anonymous@localhost').alias('p', 'password') .alias('p', 'passwd')
+	.string('P').describe('P', 'Remote FTP Port').default('P', '21').alias('P', 'port')
+	.string('r').describe('r', 'Remote FTP Base Directory').default('r', '/pub').alias('r', 'remotedir')
+	.boolean('?').alias('?', 'help').default('?', false).describe('?', 'Show usage info')
+	.boolean('v').default('v', true).describe('v', 'Be verbose').alias('v', 'verbose')
+	.argv;
+
+if(argv['?']) {
+	console.log('in help')
+	optimist.showHelp();
+	process.exit(0);
+}
+
+function log(msg) {
+	if (argv.verbose) console.log(msg);
+	
+}
+
+log(_.template("<%=localdir%> -> <%=user%>/<%=password%>:<%=host%>:<%=port%>")(argv));
+
+function die(msg) {
+	console.error(msg);
+	process.exit(1);
+}
+
+ftp = new FTP({
+	host: argv.host,
+	user: argv.user,
+	port: argv.port,
+	pass: argv.password
+});
+
+function isFile(path) {
+	if(fs.existsSync(path) && fs.statSync(path).isFile()) return true;
+	return false;
+}
+
+function isDir(path) {
+	if(fs.existsSync(path) && fs.statSync(path).isDirectory()) return true;
+	return false;
+}
+
+function uploadFile(local, remote) {
+	log("uploading " + local + " to " + remote);
+	ftp.raw.size(remote, function(err, data) {
+		console.dir(data);
+	});
+	if(--pendingOperationCount === 0) quit();
+}
+
+function traverseDir(localDir, remoteDir) {
+	ftp.raw.mkd(remoteDir, function(err, data) {
+		// ignoring mkdir errors...
+
+		fs.readdir(localDir, function(err, localFiles) {
+			if(err) die(err)
+			log("traversing " + localDir);
+			ftp.list(remoteDir, function(err, remoteFiles) {
+				if(err) die(err);
+				console.log("local: " + localFiles + " remote: " + remoteFiles);
+				syncFiles=_.difference(localFiles, remoteFiles);
+				pendingOperationCount+=syncFiles.length;
+				syncFiles.forEach(function(file) {
+					if(isDir(path.join(localDir, file))) {
+						traverseDir(path.join(localDir, file), path.join(remoteDir, file));
+					} else if (isFile(path.join(localDir, file))) {
+						uploadFile(path.join(localDir, file), path.join(remoteDir, file));
+					}
+				});
+				if(--pendingOperationCount === 0) quit();
+			});
+		});
+	});
+}
+
+function quit() {
+	log("quit()");
+	ftp.raw.quit(function(err, data) {
+			log("Bye.");
+			process.exit(0);
+	});
+}
+
+var pendingOperationCount=1;
+traverseDir(argv.localdir, argv.remotedir);
+
