@@ -58,41 +58,57 @@ function isDir(path) {
 	return false;
 }
 
-function uploadFile(local, remote) {
-	log("uploading " + local + " to " + remote);
+function uploadFile(local, remote, callback) {
 	ftp.raw.size(remote, function(err, data) {
-		console.dir(data);
+		if(!data) {
+			// no file, upload...
+			log("uploading " + local + " to " + remote);
+			var localStream = fs.createReadStream(local);
+			localStream.pause();
+			ftp.getPutSocket(remote, function(err, socket) {
+				// on setup
+				if(err) die(err);
+				localStream.pipe(socket);
+				localStream.on('finish', function(err) {
+					log("upload " + local + " complete " + err);
+					callback();
+				});
+				localStream.resume();
+			});
+		} else {
+			log("file already exists on remote: " + local);
+			callback();
+		}
 	});
-	if(--pendingOperationCount === 0) quit();
 }
 
-function traverseDir(localDir, remoteDir) {
+function traverseDir(localDir, remoteDir, callback) {
 	ftp.raw.mkd(remoteDir, function(err, data) {
 		// ignoring mkdir errors...
 
 		fs.readdir(localDir, function(err, localFiles) {
 			if(err) die(err)
 			log("traversing " + localDir);
-			ftp.list(remoteDir, function(err, remoteFiles) {
-				if(err) die(err);
-				console.log("local: " + localFiles + " remote: " + remoteFiles);
-				syncFiles=_.difference(localFiles, remoteFiles);
-				pendingOperationCount+=syncFiles.length;
-				syncFiles.forEach(function(file) {
-					if(isDir(path.join(localDir, file))) {
-						traverseDir(path.join(localDir, file), path.join(remoteDir, file));
-					} else if (isFile(path.join(localDir, file))) {
-						uploadFile(path.join(localDir, file), path.join(remoteDir, file));
-					}
-				});
-				if(--pendingOperationCount === 0) quit();
+			pendingOperationCount+=localFiles.length;
+			localFiles.forEach(function(file) {
+				if(isDir(path.join(localDir, file))) {
+					traverseDir(path.join(localDir, file), path.join(remoteDir, file), function() {
+						//log("traverseDir callback " + pendingOperationCount);
+						if(--pendingOperationCount === 0) quit();
+					});
+				} else if(isFile(path.join(localDir, file))) {
+					uploadFile(path.join(localDir, file), path.join(remoteDir, file), function() {
+						//log("uploadFile callback " + pendingOperationCount);
+						if(--pendingOperationCount === 0) quit();
+					});
+				}
 			});
+			callback();
 		});
 	});
 }
 
 function quit() {
-	log("quit()");
 	ftp.raw.quit(function(err, data) {
 			log("Bye.");
 			process.exit(0);
@@ -100,5 +116,8 @@ function quit() {
 }
 
 var pendingOperationCount=1;
-traverseDir(argv.localdir, argv.remotedir);
+traverseDir(argv.localdir, argv.remotedir, function() {
+	//log("top traverseDir callback " + pendingOperationCount);
+	if(--pendingOperationCount === 0) quit();
+});
 
